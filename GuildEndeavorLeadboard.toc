@@ -1,7 +1,7 @@
 ## Interface: 120000
 ## Title: Guild Endeavor Leadboard
 ## Notes: Ranking dos principais contribuidores do Endeavor (uso local)
-## Author: Galatixa
+## Author: galac-tixa
 ## Version: 2.2.1
 ## SavedVariables: ELBG_DB
 
