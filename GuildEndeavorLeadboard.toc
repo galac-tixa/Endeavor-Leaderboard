@@ -2,7 +2,7 @@
 ## Title: Guild Endeavor Leadboard
 ## Notes: Ranking dos principais contribuidores do Endeavor (uso local)
 ## Author: galac-tixa
-## Version: 2.2.1
+## Version: 0.1.0
 ## SavedVariables: ELBG_DB
 
 GuildEndeavorLeadboard.lua
