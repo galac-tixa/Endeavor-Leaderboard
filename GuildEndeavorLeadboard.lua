@@ -12,6 +12,9 @@ local F = CreateFrame("Frame")
 F:RegisterEvent("PLAYER_LOGIN")
 
 ELBG_DB = ELBG_DB or {}
+-- Guarda quando um Endeavor foi concluído (chegada no marco 4 / 100%)
+ELBG_DB.completedAt = ELBG_DB.completedAt or {}
+
 
 local function dprint(...)
   if ELBG_DB.debug then
@@ -160,15 +163,30 @@ local function EP_Update()
   end
   if not nextVal then nextVal = maxV end
 
-  if cur >= maxV then
-    UI.progress.nextText:SetText("Concluído ✅")
-  else
-    local remaining = nextVal - cur
-    UI.progress.nextText:SetText(string.format(
-      "Prox. marco: %s (%.0f%%) — faltam %s (%.1f%%)",
-      fmt(nextVal), (nextVal / maxV) * 100, fmt(remaining), (remaining / maxV) * 100
-    ))
+  -- Identificador estável do Endeavor (prioriza ID; cai no título se não houver)
+local key = nil
+if info and type(info) == "table" then
+  key = info.initiativeId or info.initiativeID or info.id
+end
+key = tostring(key or titleText or "unknown")
+
+if cur >= maxV then
+  -- Grava a data/hora da primeira vez que chegar no marco 4 (100%)
+  if not ELBG_DB.completedAt[key] then
+    ELBG_DB.completedAt[key] = time()
   end
+
+  local ts = ELBG_DB.completedAt[key]
+  local doneDate = (ts and date("%d/%m/%Y", ts)) or "—"
+  UI.progress.nextText:SetText(("Concluído ✅ • %s"):format(doneDate))
+else
+  local remaining = nextVal - cur
+  UI.progress.nextText:SetText(string.format(
+    "Prox. marco: %s (%.0f%%) — faltam %s (%.1f%%)",
+    fmt(nextVal), (nextVal / maxV) * 100, fmt(remaining), (remaining / maxV) * 100
+  ))
+end
+
 
   if C_CurrencyInfo and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
     local cInfo = C_CurrencyInfo.GetCurrencyInfo(EP_CURRENCY_ID)
