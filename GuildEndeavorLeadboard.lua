@@ -178,7 +178,7 @@ if cur >= maxV then
 
   local ts = ELBG_DB.completedAt[key]
   local doneDate = (ts and date("%d/%m/%Y", ts)) or "—"
-  UI.progress.nextText:SetText(("Concluído ✅ • %s"):format(doneDate))
+  UI.progress.nextText:SetText(("Concluído • %s"):format(doneDate))
 else
   local remaining = nextVal - cur
   UI.progress.nextText:SetText(string.format(
