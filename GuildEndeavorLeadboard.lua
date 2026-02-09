@@ -120,6 +120,10 @@ local function EP_Update()
   local titleText = "Endeavor"
   local cur = 0
   local maxV = EP_MAX_TOTAL
+  
+  ELBG_DB = ELBG_DB or {}
+  ELBG_DB.completedAt = ELBG_DB.completedAt or {}
+
 
   if info then
     titleText = info.name or info.title or info.initiativeName or "Endeavor"
