@@ -1,10 +1,11 @@
 -- Guild Endeavor Leadboard
--- Version 2.3.0
--- Features:
---  - Top list expanded to 10 players
---  - Internal scroll (mouse wheel) to view additional entries
---  - Resizable window height (bottom-right handle) to show more rows
---  - Embedded Endeavor Progress panel inside the window
+-- Version 2.3.4
+-- Changes:
+--  - Refresh button next to close (hard refresh)
+--  - Fixed nil calls by using forward declarations for local functions
+--  - Auto-refresh ticker while window is open
+--  - Detect Endeavor change (initiativeId) -> clear UI + restart retry
+--  - Completion date at 100% persisted in SavedVariables
 
 local ADDON_TAG = "|cff67d4ff[ELBG]|r"
 
@@ -12,9 +13,7 @@ local F = CreateFrame("Frame")
 F:RegisterEvent("PLAYER_LOGIN")
 
 ELBG_DB = ELBG_DB or {}
--- Guarda quando um Endeavor foi concluído (chegada no marco 4 / 100%)
 ELBG_DB.completedAt = ELBG_DB.completedAt or {}
-
 
 local function dprint(...)
   if ELBG_DB.debug then
@@ -22,7 +21,7 @@ local function dprint(...)
   end
 end
 
--- Accent folding (Vini merge)
+-- Accent folding
 local FOLD = {
   ["á"]="a",["à"]="a",["ã"]="a",["â"]="a",["ä"]="a",
   ["Á"]="a",["À"]="a",["Ã"]="a",["Â"]="a",["Ä"]="a",
@@ -36,6 +35,7 @@ local FOLD = {
   ["Ú"]="u",["Ù"]="u",["Û"]="u",["Ü"]="u",
   ["ç"]="c",["Ç"]="c",
 }
+
 local function normalizeName(raw)
   if type(raw) ~= "string" then return nil end
   local name = raw:match("^([^%-]+)") or raw
@@ -73,10 +73,18 @@ local UI = {}
 local lastRefreshAt = 0
 local refreshInProgress = false
 local retryToken = 0
+local refreshTicker = nil
+local activeInitiativeId = nil
 local MIN_REFRESH_INTERVAL = 0.9
 
 local MAX_ROWS = 10
 local ROW_H, GAP = 24, 2
+
+-- >>> Forward declarations (FIX for nil calls inside CreateUI button handlers)
+local ClearRows
+local Refresh
+local StartRetry
+-- <<<
 
 local function EP_GetInitiativeInfo()
   if not C_NeighborhoodInitiative then return nil end
@@ -115,15 +123,15 @@ end
 local function EP_Update()
   if not UI.progress or not UI.progress:IsShown() then return end
 
+  -- safety: ensure table exists even if something reinitialized ELBG_DB
+  ELBG_DB = ELBG_DB or {}
+  ELBG_DB.completedAt = ELBG_DB.completedAt or {}
+
   local info = EP_GetInitiativeInfo()
 
   local titleText = "Endeavor"
   local cur = 0
   local maxV = EP_MAX_TOTAL
-  
-  ELBG_DB = ELBG_DB or {}
-  ELBG_DB.completedAt = ELBG_DB.completedAt or {}
-
 
   if info then
     titleText = info.name or info.title or info.initiativeName or "Endeavor"
@@ -167,30 +175,27 @@ local function EP_Update()
   end
   if not nextVal then nextVal = maxV end
 
-  -- Identificador estável do Endeavor (prioriza ID; cai no título se não houver)
-local key = nil
-if info and type(info) == "table" then
-  key = info.initiativeId or info.initiativeID or info.id
-end
-key = tostring(key or titleText or "unknown")
-
-if cur >= maxV then
-  -- Grava a data/hora da primeira vez que chegar no marco 4 (100%)
-  if not ELBG_DB.completedAt[key] then
-    ELBG_DB.completedAt[key] = time()
+  -- stable key for completion date
+  local key = nil
+  if info and type(info) == "table" then
+    key = info.initiativeId or info.initiativeID or info.id
   end
+  key = tostring(key or titleText or "unknown")
 
-  local ts = ELBG_DB.completedAt[key]
-  local doneDate = (ts and date("%d/%m/%Y", ts)) or "—"
-  UI.progress.nextText:SetText(("Concluído • %s"):format(doneDate))
-else
-  local remaining = nextVal - cur
-  UI.progress.nextText:SetText(string.format(
-    "Prox. marco: %s (%.0f%%) — faltam %s (%.1f%%)",
-    fmt(nextVal), (nextVal / maxV) * 100, fmt(remaining), (remaining / maxV) * 100
-  ))
-end
-
+  if cur >= maxV then
+    if not ELBG_DB.completedAt[key] then
+      ELBG_DB.completedAt[key] = time()
+    end
+    local ts = ELBG_DB.completedAt[key]
+    local doneDate = (ts and date("%d/%m/%Y", ts)) or "—"
+    UI.progress.nextText:SetText(("Concluído desde %s"):format(doneDate))
+  else
+    local remaining = nextVal - cur
+    UI.progress.nextText:SetText(string.format(
+      "Prox. marco: %s (%.0f%%) — faltam %s (%.1f%%)",
+      fmt(nextVal), (nextVal / maxV) * 100, fmt(remaining), (remaining / maxV) * 100
+    ))
+  end
 
   if C_CurrencyInfo and type(C_CurrencyInfo.GetCurrencyInfo) == "function" then
     local cInfo = C_CurrencyInfo.GetCurrencyInfo(EP_CURRENCY_ID)
@@ -219,19 +224,10 @@ local function UpdateScrollRange()
   UI.scroll:SetVerticalScroll(clamp(cur, 0, maxScroll))
 end
 
-local function ApplyHeaderIcon(tex)
-  if tex.SetAtlas then
-    local ok = pcall(tex.SetAtlas, tex, "hud-minimap-icon-home", true)
-    if ok then return end
-  end
-  tex:SetTexture("Interface\\Icons\\UI_Hearthstone")
-end
-
 -- =========================
 -- UI
 -- =========================
 local function CreateUI()
-  -- If we crashed during a previous CreateUI call, UI.frame may exist but the rest (rows/scroll) won't.
   if UI.frame and UI.rows and UI.scroll and UI.progress then return end
   if UI.frame and (not UI.rows or not UI.scroll or not UI.progress) then
     pcall(function() UI.frame:Hide() end)
@@ -259,7 +255,7 @@ local function CreateUI()
   f:SetResizable(true)
   if f.SetMinResize then f:SetMinResize(320, 212) end
   if f.SetResizeBounds then
-    f:SetResizeBounds(320, 212, 320, 420) -- lock width; allow taller
+    f:SetResizeBounds(320, 212, 320, 420)
   end
 
   local resize = CreateFrame("Button", nil, f)
@@ -287,7 +283,6 @@ local function CreateUI()
   hdr:SetPoint("TOPRIGHT", -6, -6)
   hdr:SetHeight(34)
 
-
   f:SetMovable(true)
   f:EnableMouse(true)
   hdr:EnableMouse(true)
@@ -310,13 +305,44 @@ local function CreateUI()
   close:SetScript("OnClick", function()
     f:Hide()
     retryToken = retryToken + 1
+    if refreshTicker then refreshTicker:Cancel(); refreshTicker=nil end
+  end)
+
+  -- NEW: Refresh button next to close
+  local refreshBtn = CreateFrame("Button", nil, hdr, "UIPanelButtonTemplate")
+  refreshBtn:SetSize(24, 22)
+  refreshBtn:SetPoint("RIGHT", close, "LEFT", -4, 0)
+  refreshBtn:SetText("R") -- if your client doesn't render, switch to "R"
+
+  refreshBtn:SetScript("OnClick", function()
+    if not UI.frame or not UI.frame:IsShown() then return end
+
+    -- Hard refresh: ignore throttle + reset in-flight flag
+    lastRefreshAt = 0
+    refreshInProgress = false
+
+    UI.sub:SetText("Endeavor • atualizando...")
+    ClearRows()
+    if UI.scroll then UI.scroll:SetVerticalScroll(0) end
+
+    Refresh()
+    StartRetry()
+  end)
+
+  refreshBtn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Atualizar agora", 1, 1, 1)
+    GameTooltip:Show()
+  end)
+  refreshBtn:SetScript("OnLeave", function()
+    GameTooltip:Hide()
   end)
 
   UI.sub = f:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
   UI.sub:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 8, -2)
   UI.sub:SetText("Endeavor • aguardando ranking...")
 
-  -- Endeavor Progress panel (embedded)
+  -- Endeavor Progress panel
   local p = CreateFrame("Frame", nil, f, "BackdropTemplate")
   UI.progress = p
   p:SetPoint("TOPLEFT", UI.sub, "BOTTOMLEFT", 0, -2)
@@ -505,7 +531,8 @@ local function SetRankVisual(i, row)
   end
 end
 
-local function ClearRows()
+-- FIX: assigned (not "local function") because CreateUI closures reference it
+ClearRows = function()
   for i=1,MAX_ROWS do
     local row = UI.rows and UI.rows[i]
     if not row then break end
@@ -589,7 +616,8 @@ local function Render(entries)
   UpdateScrollRange()
 end
 
-local function Refresh()
+-- FIX: Refresh assigned (not "local function") because CreateUI closures reference it
+Refresh = function()
   if not UI.frame or not UI.frame:IsShown() then return false end
   EP_Update()
 
@@ -624,11 +652,32 @@ local function Refresh()
     return false
   end
 
+  -- If Endeavor changed: reset UI and restart retry flow
+  if activeInitiativeId ~= id then
+    activeInitiativeId = id
+
+    retryToken = retryToken + 1
+
+    UI.sub:SetText("Endeavor • carregando novo endeavor...")
+    ClearRows()
+    if UI.scroll then UI.scroll:SetVerticalScroll(0) end
+
+    refreshInProgress = false
+
+    C_Timer.After(0, function()
+      if UI.frame and UI.frame:IsShown() then
+        StartRetry()
+      end
+    end)
+
+    return false
+  end
+
   local root = GetActivityRoot(id)
   local top, n = ComputeTop(root)
 
   if top and #top > 0 then
-    UI.sub:SetText("") -- remove o subtítulo quando já temos ranking
+    UI.sub:SetText("")
     Render(top)
     dprint("OK top:", #top, "taskActivity entries:", n, "initiativeId:", id)
     refreshInProgress = false
@@ -642,7 +691,8 @@ local function Refresh()
   end
 end
 
-local function StartRetry()
+-- FIX: StartRetry assigned (not "function StartRetry()") because CreateUI closures reference it
+StartRetry = function()
   if not UI.frame or not UI.frame:IsShown() then return end
   retryToken = retryToken + 1
   local token = retryToken
@@ -705,11 +755,25 @@ SlashCmdList["ELBG"]=function(msg)
     end
 
     ClearRows()
+    -- Primeira tentativa
+    lastRefreshAt = 0
+    refreshInProgress = false
     Refresh()
     StartRetry()
+
+    -- Auto polling while window is open
+    if refreshTicker then refreshTicker:Cancel() end
+    refreshTicker = C_Timer.NewTicker(2.0, function()
+      if UI.frame and UI.frame:IsShown() then
+        Refresh()
+      end
+    end)
+
   elseif msg=="hide" then
     if UI.frame then UI.frame:Hide() end
     retryToken = retryToken + 1
+    if refreshTicker then refreshTicker:Cancel(); refreshTicker=nil end
+
   elseif msg=="debug" then
     ELBG_DB.debug = not ELBG_DB.debug
     print(ADDON_TAG, "debug:", ELBG_DB.debug and "ON" or "OFF")
